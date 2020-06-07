@@ -46,6 +46,7 @@ class StartupBase(object):
 
 class SingleStartup(StartupBase):
     def __init__(self, context):
+        print("Running SingleStartup.")
         pass
 
     def startup(self, context):
@@ -61,6 +62,7 @@ class SingleStartup(StartupBase):
 
 class PSStartup(StartupBase):
     def __init__(self, context):
+        print("Running PSStartup.")
         pass
 
     def startup(self, context):
@@ -76,7 +78,15 @@ class PSStartup(StartupBase):
 
 class CollectiveStartup(StartupBase):
     def __init__(self, context):
+        print("Running CollectiveStartup.")
         pass
 
     def startup(self, context):
-        pass
+        model_dict = context["env"]["phase"][0]
+        with fluid.scope_guard(context["_model"][model_dict["name"]][2]):
+            context["exe"].run(context["_model"][model_dict["name"]][1])
+            train_prog = context["_model"][model_dict["name"]][4]
+            startup_prog = context["_model"][model_dict["name"]][1]
+            with fluid.program_guard(train_prog, startup_prog):
+                self.load(context, True)
+        context["status"] = "train_pass"

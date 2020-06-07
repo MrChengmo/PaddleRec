@@ -50,7 +50,6 @@ class GeneralTrainer(Trainer):
         self.regist_context_processor('terminal_pass', self.terminal)
 
     def instance(self, context):
-        print("instance begin")
         instance_class_path = envs.get_global_env(
             self.runner_env_name + ".instance_class_path", default_value=None)
         if instance_class_path:
@@ -73,7 +72,6 @@ class GeneralTrainer(Trainer):
         instance_class.instance(context)
 
     def network(self, context):
-        print("network begin")
         network_class_path = envs.get_global_env(
             self.runner_env_name + ".network_class_path", default_value=None)
         if network_class_path:
@@ -96,7 +94,6 @@ class GeneralTrainer(Trainer):
         network_class.build_network(context)
 
     def startup(self, context):
-        print("startup begin")
         startup_class_path = envs.get_global_env(
             self.runner_env_name + ".startup_class", default_value=None)
         if startup_class_path:
@@ -118,7 +115,6 @@ class GeneralTrainer(Trainer):
         startup_class.startup(context)
 
     def runner(self, context):
-        print("executor begin")
         runner_class_path = envs.get_global_env(
             self.runner_env_name + ".runner_class", default_value=None)
         if runner_class_path:

@@ -44,7 +44,7 @@ class RunnerBase(object):
             self._executor_dataset_train(model_dict, context)
         end_time = time.time()
         seconds = end_time - begin_time
-        print("epoch {} done, use time: {}".format(epoch, seconds))
+        print("epoch done, use time: {}".format(seconds))
 
     def _executor_dataset_train(self, model_dict, context):
         reader_name = model_dict["dataset_name"]
@@ -84,20 +84,22 @@ class RunnerBase(object):
                     print_period=fetch_period)
 
     def _executor_dataloader_train(self, model_dict, context):
-        reader_name = model_dict["dataset_name"]
         model_name = model_dict["name"]
         model_class = context["_model"][model_name][3]
-        program = context["_model"][model_name][0].clone()
-        if context["is_fleet"] and not context["is_infer"]:
-            program = fluid.compiler.CompiledProgram(
-                program).with_data_parallel(
-                    loss_name=model_class.get_avg_cost().name,
-                    build_strategy=context["strategy"].get_build_strategy(),
-                    exec_strategy=context["strategy"].get_execute_strategy())
-        elif not context["is_fleet"] and not context["is_infer"]:
-            program = fluid.compiler.CompiledProgram(
-                program).with_data_parallel(
-                    loss_name=model_class.get_avg_cost().name)
+        if context["is_infer"]:
+            program = self._get_single_cpu_program(model_dict, context)
+        elif context["is_fleet"]:
+            if context["fleet_mode"].upper() == "PS":
+                program = self._get_ps_program(model_dict, context)
+            elif context["fleet_mode"].upper() == "COLLECTIVE":
+                program = context["_model"][model_name][0]
+        elif not context["is_fleet"]:
+            if context["device"].upper() == "CPU":
+                program = self._get_single_cpu_program(model_dict, context)
+            elif context["device"].upper() == "GPU":
+                program = self._get_single_gpu_program(model_dict, context)
+
+        reader_name = model_dict["dataset_name"]
         fetch_vars = []
         fetch_alias = []
         fetch_period = int(
@@ -136,6 +138,46 @@ class RunnerBase(object):
                     batch_id += 1
             except fluid.core.EOFException:
                 reader.reset()
+
+    def _get_single_gpu_program(self, model_dict, context):
+        model_name = model_dict["name"]
+        return context["_model"][model_name][0].clone()
+
+    def _get_single_cpu_program(self, model_dict, context):
+        model_name = model_dict["name"]
+        model_class = context["_model"][model_name][3]
+        program = context["_model"][model_name][0].clone()
+        program = fluid.compiler.CompiledProgram(
+            program).with_data_parallel(
+            loss_name=model_class.get_avg_cost().name)
+        return program
+
+    def _get_ps_program(self, model_dict, context):
+        model_name = model_dict["name"]
+        model_class = context["_model"][model_name][3]
+        program = context["_model"][model_name][0].clone()
+        program = fluid.compiler.CompiledProgram(
+            program).with_data_parallel(
+            loss_name=model_class.get_avg_cost().name,
+            build_strategy=context["strategy"].get_build_strategy(),
+            exec_strategy=context["strategy"].get_execute_strategy())
+        return program
+
+    # def _get_collective_gpu_program(self, model_dict, context):
+    #     model_name = model_dict["name"]
+    #     model_class = context["_model"][model_name][3]
+    #     program = context["_model"][model_name][0].clone()
+    #     build_strategy = fluid.compiler.BuildStrategy()
+    #     build_strategy.fuse_elewise_add_act_ops = True
+    #     build_strategy.fuse_bn_act_ops = True
+    #     exec_strategy = fluid.ExecutionStrategy()
+    #     exec_strategy.num_threads = 1
+    #     program = fluid.compiler.CompiledProgram(
+    #         program).with_data_parallel(
+    #         loss_name=model_class.get_avg_cost().name,
+    #         build_strategy=build_strategy,
+    #         exec_strategy=exec_strategy)
+    #     return program
 
     def save(self, epoch_id, context, is_fleet=False):
         def need_save(epoch_id, epoch_interval, is_last=False):
@@ -196,6 +238,7 @@ class RunnerBase(object):
 
 class SingleRunner(RunnerBase):
     def __init__(self, context):
+        print("Running SingleRunner.")
         pass
 
     def run(self, context):
@@ -216,6 +259,7 @@ class SingleRunner(RunnerBase):
 
 class PSRunner(RunnerBase):
     def __init__(self, context):
+        print("Running PSRunner.")
         pass
 
     def run(self, context):
@@ -236,15 +280,16 @@ class PSRunner(RunnerBase):
 
 class CollectiveRunner(RunnerBase):
     def __init__(self, context):
+        print("Running CollectiveRunner.")
         pass
 
-    def exuctor(self, context):
+    def run(self, context):
         epochs = int(
             envs.get_global_env("runner." + context["runner_name"] +
                                 ".epochs"))
         model_dict = context["env"]["phase"][0]
         for epoch in range(epochs):
-            self._run(context)
+            self._run(context, model_dict)
             with fluid.scope_guard(context["_model"][model_dict["name"]][2]):
                 train_prog = context["_model"][model_dict["name"]][4]
                 startup_prog = context["_model"][model_dict["name"]][1]

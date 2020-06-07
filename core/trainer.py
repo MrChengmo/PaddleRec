@@ -97,6 +97,7 @@ class Trainer(object):
             self._exe = fluid.Executor(self._place)
         else:
             raise ValueError("Not Support device {}".format(device))
+        self._context["device"] = device.upper()
         self._context["exe"] = self._exe
         self._context["place"] = self._place
 
@@ -119,8 +120,7 @@ class Trainer(object):
             pass
 
     def which_engine(self):
-        engine = envs.get_global_env(
-            "runner." + self._runner_name + ".engine", default_value="SINGLE")
+        engine = envs.get_runtime_environ("train.trainer.engine")
         if engine.upper() == "SINGLE":
             self.engine = EngineMode.SINGLE
             self.is_fleet = False
@@ -146,7 +146,7 @@ class Trainer(object):
             self.fleet_mode = FleetMode.PSLIB
         else:
             raise ValueError("Not Support Fleet Mode {}".format(fleet_mode))
-        self._context["fleet_mode"] = self.fleet_mode
+        self._context["fleet_mode"] = fleet_mode
 
     def which_executor_mode(self):
         executor_mode = envs.get_runtime_environ("train.trainer.executor_mode")
