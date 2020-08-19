@@ -105,9 +105,7 @@ class ClusterEngine(Engine):
                 if device == "CPU":
                     cluster_env_check_tool = CloudPsCpuEnv()
                 elif device == "GPU":
-                    raise ValueError(
-                        "PS-GPU on paddlecloud is not supported at this time, comming soon"
-                    )
+                    cluster_env_check_tool = CloudPsGpuEnv()
             if fleet_mode == "COLLECTIVE":
                 if device == "GPU":
                     cluster_env_check_tool = CloudCollectiveEnv()
@@ -316,3 +314,27 @@ class CloudPsCpuEnv(PaddleCloudK8sEnv):
             "submit.k8s_ps_num", 1)
         self.cluster_env["K8S_PS_CORES"] = self.backend_env.get(
             "submit.k8s_ps_cores", 2)
+
+
+class CloudPsGpuEnv(PaddleCloudK8sEnv):
+    def __init__(self):
+        super(CloudPsGpuEnv, self).__init__()
+
+    def env_check(self):
+        super(CloudPsGpuEnv, self).env_check()
+
+        self.cluster_env["DISTRIBUTE_MODE"] = "PS_GPU_K8S"
+        self.cluster_env["K8S_TRAINERS"] = self.backend_env.get(
+            "submit.k8s_trainers", 1)
+        self.cluster_env["K8S_CPU_CORES"] = self.backend_env.get(
+            "submit.k8s_cpu_cores", 2)
+        self.cluster_env["K8S_PS_NUM"] = self.backend_env.get(
+            "submit.k8s_ps_num", 1)
+        self.cluster_env["K8S_PS_CORES"] = self.backend_env.get(
+            "submit.k8s_ps_cores", 2)
+        self.cluster_env["K8S_TRAINERS"] = self.backend_env.get(
+            "submit.k8s_trainers", 1)
+        self.cluster_env["K8S_GPU_CARD"] = self.backend_env.get(
+            "submit.k8s_gpu_card", 1)
+        self.cluster_env["K8S_CPU_CORES"] = self.backend_env.get(
+            "submit.k8s_cpu_cores", 1)
