@@ -68,6 +68,7 @@ class SingleNetwork(NetworkBase):
                                 is_infer=context["is_infer"],
                                 dataset_name=model_dict["dataset_name"])
                         else:
+                            print("model_dict: {}".format(model_dict))
                             model._data_var = model.input_data(
                                 dataset_name=model_dict["dataset_name"])
 

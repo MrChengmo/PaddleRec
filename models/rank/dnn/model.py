@@ -33,54 +33,84 @@ class Model(ModelBase):
             "hyper_parameters.sparse_feature_dim")
         self.learning_rate = envs.get_global_env(
             "hyper_parameters.optimizer.learning_rate")
+        self.dense_feature_dim = envs.get_global_env(
+            "hyper_parameters.dense_feature_dim")
 
-    def net(self, input, is_infer=False):
-        self.sparse_inputs = self._sparse_data_var[1:]
-        self.dense_input = self._dense_data_var[0]
-        self.label_input = self._sparse_data_var[0]
+    def input_data(self):
+        dense_input = fluid.data(name="dense_input",
+                                 shape=[-1, self.dense_feature_dim],
+                                 dtype="float32")
 
+        sparse_input_ids = [
+            fluid.data(name="C" + str(i),
+                       shape=[-1, 1],
+                       lod_level=1,
+                       dtype="int64") for i in range(1, 27)
+        ]
+
+        label = fluid.data(name="label", shape=[-1, 1], dtype="float32")
+
+        inputs = [dense_input] + sparse_input_ids + [label]
+        return inputs
+
+    def net(self, inputs, is_infer=False):
         def embedding_layer(input):
-            emb = fluid.layers.embedding(
+            return fluid.layers.embedding(
                 input=input,
                 is_sparse=True,
-                is_distributed=self.is_distributed,
                 size=[self.sparse_feature_number, self.sparse_feature_dim],
                 param_attr=fluid.ParamAttr(
                     name="SparseFeatFactors",
-                    initializer=fluid.initializer.Uniform()), )
-            emb_sum = fluid.layers.sequence_pool(input=emb, pool_type='sum')
-            return emb_sum
+                    initializer=fluid.initializer.Uniform()),
+            )
+        
+        sparse_embed_seq = list(map(embedding_layer, inputs[1:-1]))
 
-        sparse_embed_seq = list(map(embedding_layer, self.sparse_inputs))
-        concated = fluid.layers.concat(
-            sparse_embed_seq + [self.dense_input], axis=1)
+        concated = fluid.layers.concat(sparse_embed_seq + inputs[0:1], axis=1)
 
-        fcs = [concated]
-        hidden_layers = envs.get_global_env("hyper_parameters.fc_sizes")
+        # with fluid.device_guard("gpu"):
+        fc1 = fluid.layers.fc(
+            input=concated,
+            size=400,
+            act="relu",
+            param_attr=fluid.ParamAttr(initializer=fluid.initializer.Normal(
+                scale=1 / math.sqrt(concated.shape[1]))), name="fc1"
+        )
 
-        for size in hidden_layers:
-            output = fluid.layers.fc(
-                input=fcs[-1],
-                size=size,
-                act='relu',
-                param_attr=fluid.ParamAttr(
-                    initializer=fluid.initializer.Normal(
-                        scale=1.0 / math.sqrt(fcs[-1].shape[1]))))
-            fcs.append(output)
+        fc2 = fluid.layers.fc(
+            input=fc1,
+            size=400,
+            act="relu",
+            param_attr=fluid.ParamAttr(initializer=fluid.initializer.Normal(
+                scale=1 / math.sqrt(fc1.shape[1]))), name="fc2"
+        )
+
+        fc3 = fluid.layers.fc(
+            input=fc2,
+            size=400,
+            act="relu",
+            param_attr=fluid.ParamAttr(initializer=fluid.initializer.Normal(
+                scale=1 / math.sqrt(fc2.shape[1]))), name="fc3"
+        )
+
+        label = fluid.layers.cast(inputs[-1], dtype="int64")
 
         predict = fluid.layers.fc(
-            input=fcs[-1],
+            input=fc3,
             size=2,
             act="softmax",
             param_attr=fluid.ParamAttr(initializer=fluid.initializer.Normal(
-                scale=1 / math.sqrt(fcs[-1].shape[1]))))
+                scale=1 / math.sqrt(fc3.shape[1]))),
+        )
 
         self.predict = predict
 
-        auc, batch_auc, _ = fluid.layers.auc(input=self.predict,
-                                             label=self.label_input,
-                                             num_thresholds=2**12,
-                                             slide_steps=20)
+        auc, batch_auc, _ = fluid.layers.auc(input=predict,
+                                            label=label,
+                                            num_thresholds=2**12,
+                                            slide_steps=20)
+        fluid.layers.Print(auc, message="training auc_var")
+
         if is_infer:
             self._infer_results["AUC"] = auc
             self._infer_results["BATCH_AUC"] = batch_auc
@@ -88,9 +118,9 @@ class Model(ModelBase):
 
         self._metrics["AUC"] = auc
         self._metrics["BATCH_AUC"] = batch_auc
-        cost = fluid.layers.cross_entropy(
-            input=self.predict, label=self.label_input)
-        avg_cost = fluid.layers.reduce_mean(cost)
+
+        cost = fluid.layers.cross_entropy(input=predict, label=label)
+        avg_cost = fluid.layers.reduce_sum(cost)
         self._cost = avg_cost
 
     def optimizer(self):
