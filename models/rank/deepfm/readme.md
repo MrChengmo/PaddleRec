@@ -187,6 +187,154 @@ Infer infer_phase of epoch 1 done, use time: 1764.81796193, global metrics: AUC=
 PaddleRec Finish
 ```
 
-## 进阶使用
+## 进阶使用——分布式训练
+
+### 调整`config.yaml`，配置分布式模式
+
+我们需要配置分布式训练的`config.yaml`，以进入分布式训练模式。分布式训练yaml配置可以参考[启动分布式训练](https://github.com/PaddlePaddle/PaddleRec/blob/master/doc/distributed_train.md)
+
+以deepFM的模型配置为例，需要手动进行以下几处更改
+
+```yaml
+# 1、workspace需要更改为在分布式节点中, 模型的实际目录，与执行目录的相对路径
+# 如果在模型目录中执行，直接更改为 ./
+workspace: "./"
+
+dataset:
+  - name: train_sample
+    type: DataLoader
+    batch_size: 5
+    # 2、数据目录也需要进行相应的更新，假如数据在模型目录的train_data下
+    # 则更新为 {workspace}/train_data
+    data_path: "{workspace}/train_data"
+    sparse_slots: "label feat_idx"
+    dense_slots: "feat_value:39"
+
+hyper_parameters:
+    optimizer:
+        class: Adam
+        learning_rate: 0.001
+    sparse_feature_number: 1086460
+    sparse_feature_dim: 9
+    num_field: 39
+    fc_sizes: [400, 400, 400]
+    reg: 0.001
+    act: "relu"
+
+
+mode: [cluster_runner]
+
+runner:
+  - name: train_runner
+    class: train
+    epochs: 2
+    device: cpu
+    init_model_path: ""
+    save_checkpoint_interval: 1
+    save_inference_interval: 1
+    save_checkpoint_path: "increment"
+    save_inference_path: "inference"
+    print_interval: 1
+    phases: phase1
+  # 3、使用cluster runner进行分布式训练
+  - name: cluster_runner
+    class: cluster_train
+    # 使用CPU-参数服务器模式
+    device: cpu 
+    fleet_mode: ps 
+    # 使用全异步(async)模式，sync/geo可选
+    distribute_strategy: async
+    # 以下超参配置与单机训练一致，注意模型目录的路径即可
+    init_model_path: ""
+    save_checkpoint_interval: 1
+    save_inference_interval: 1
+    save_checkpoint_path: "increment"
+    save_inference_path: "inference"
+    print_interval: 1
+    phases: phase1
+
+
+phase:
+- name: phase1
+  model: "{workspace}/model.py"
+  dataset_name: train_sample
+  thread_num: 10
+
+```
+
+### 分布式训练启动
+
+PaddleRec在K8S节点中启动，在节点上需要完成以下工作：
+
+- 安装PaddleRec & PaddlePaddle
+
+  PaddleRec与Paddle的大版本要求一致。在节点上安装PaddleRec的方式是：
+
+  1. git下载PaddleRec源码，cd到代码目录，执行`python setup.py install`
+
+  2. 如果无法使用git/pip命令直接从远程源下载，也可使用wget/hadoop的方法将PaddleRec代码拉到节点上，PaddlePaddle whl包同理
+
+  3. 如果不更改PaddleRec-Core的代码，可以直接打包一个包含PaddleRec及Paddle的docker镜像，使用K8S调度
+
+
+- 上传当前模型的文件
+
+  当前模型训练所使用的模型文件夹下的`*.py、*.yaml、*.sh`文件与PaddleRec的核心代码是解耦的，可以自行上传当前的组网及配置，方式有：
+
+  1. 使用wget/hadoop等方法将当前训练的组网配置上传
+
+  2. K8S调度时，可以使用`config_map`的方式，将文件挂载到节点上去
+
+- 配置每个节点的超参
+
+  参数服务器模式下，分为`Server`与`Trainer`两种角色，每种角色有多台机器。每个节点通过其环境变量确定扮演的角色
+
+  Paddle参数服务器运行所需的超参如下：
+
+  > role_maker.PaddleCloudRoleMaker()是怎样判断当前节点所扮演的角色的？
+  > 
+  > Paddle参数服务器模式中，使用各个节点机器的环境变量来确定当前节点的角色。为了能准确无误的分配角色，在每个节点上，我们都需要指定如下环境变量：
+  > #### 共有的环境变量
+  > - export PADDLE_TRAINERS_NUM=2 # 训练节点数
+  > - export PADDLE_PSERVERS_IP_PORT_LIST="127.0.0.1:36011,127.0.0.1:36012" # 各个pserver的ip:port 组合构成的字符串
+  > 
+  > #### Pserver特有的环境变量
+  > - export TRAINING_ROLE=PSERVER # 当前节点的角色是PSERVER
+  > - export PADDLE_PORT=36011 # 当前PSERVER的通信端口
+  > - export POD_IP=127.0.0.1 # 当前PSERVER的ip地址
+  > #### Trainer特有的环境变量
+  > - export TRAINING_ROLE=TRAINER # 当前节点的角色是TRAINER
+  > - export PADDLE_TRAINER_ID=0 # 当前Trainer节点的编号,范围为[0，PADDLE_TRAINERS_NUM)
+  > 
+  > 完成上述环境变量指定后，`PaddleCloudRoleMaker()`便可以正常的运行，决定当前节点的角色。
+
+  PaddleRec执行还需配置如下超参
+  ```bash
+  # paddlerec_role分为 master与 worker，master执行任务提交，woker执行实际的运行（包含server与trainer）
+  PADDLE_PADDLEREC_ROLE=WORKER
+
+  # cluster—_type主要决定了数据的切分规则
+  PADDLEREC_CLUSTER_TYPE=MPI or K8S
+  ```
+
+### 分布式训练数据准备
+
+参数服务器模式是数据并行的训练，因此需要确定数据的切分规则。
+
+理想情况是每个节点都能分到的数据均衡，并且数据没有重复。有两种做法：
+
+- 在启动分布式训练时，任务调度将数据随机划分，分别下载到各个节点上，这样节点上的训练启动时，无需再进行额外的数据切分操作.
+
+  这种情况下，设置环境变量：
+  ```
+  PADDLEREC_CLUSTER_TYPE=MPI
+  ```
+
+- 启动训练时，每个节点上都挂载了完整的数据目录，节点启动训练时，仍需要根据自身的ID信息，对数据集进行切分，拿到自己的部分，进行数据并行。
+
+  这种情况下，设置环境变量：
+  ```
+  PADDLEREC_CLUSTER_TYPE=K8S
+  ```
   
 ## FAQ

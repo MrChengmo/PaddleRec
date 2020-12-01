@@ -58,13 +58,25 @@ runner:
     save_inference_path: "inference"
     print_interval: 1
     phases: phase1
+  - name: cluster_runner
+    class: cluster_train
+    device: cpu
+    fleet_mode: ps
+    distribute_strategy: async
+    init_model_path: ""
+    save_checkpoint_interval: 1
+    save_inference_interval: 1
+    save_checkpoint_path: "increment"
+    save_inference_path: "inference"
+    print_interval: 1
+    phases: phase1
+
   - name: infer_runner
     class: infer
     device: cpu
     init_model_path: "increment/1"
     print_interval: 1
     phases: infer_phase
-
 
 
 phase:
