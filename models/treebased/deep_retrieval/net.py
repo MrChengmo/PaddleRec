@@ -18,8 +18,9 @@ import paddle.nn.functional as F
 import math
 
 
+
 class DeepRetrieval(nn.Layer):
-    def __init__(self, width, height, beam_search_num, item_path_volume, user_embedding_size):
+    def __init__(self, width, height, beam_search_num, item_path_volume, user_embedding_size, item_count, use_multi_task_learning = False, multi_task_mlp_size = None):
         super(DeepRetrieval, self).__init__()
         self.width = width
         self.height = height
@@ -32,9 +33,10 @@ class DeepRetrieval(nn.Layer):
         print("in_sizes: {}".format(in_sizes))
         out_sizes = [self.height] * self.width
         print("out_sizes: {}".format(out_sizes))
-
+        self.use_multi_task_learning = use_multi_task_learning
         self.mlp_layers = []
-
+        self.multi_task_mlp_layers_size = [user_embedding_size]
+        self.multi_task_mlp_layers = []
         for i in range(width):
             linear = paddle.nn.Linear(
                 in_features=in_sizes[i],
@@ -44,7 +46,31 @@ class DeepRetrieval(nn.Layer):
                     initializer=paddle.nn.initializer.Normal(
                         std=1.0 / math.sqrt(out_sizes[i]))))
             self.mlp_layers.append(linear)
+            self.add_sublayer("C_{}_mlp_weight".format(i), linear)
 
+        if self.use_multi_task_learning:
+            self.item_count = item_count
+            for i in multi_task_mlp_size:
+                self.multi_task_mlp_layers_size.append(i)
+            for i in range(len(self.multi_task_mlp_layers_size) - 1):
+                linear = paddle.nn.Linear(
+                    in_features=self.multi_task_mlp_layers_size[i],
+                    out_features=self.multi_task_mlp_layers_size[i + 1],
+                    weight_attr=paddle.ParamAttr(
+                        name="multi_task_{}_mlp_weight".format(i),
+                        initializer=paddle.nn.initializer.Normal(
+                            std=1.0 / math.sqrt(out_sizes[i]))))
+                self.multi_task_mlp_layers.append(linear)
+                self.add_sublayer("multi_task_{}_mlp_weight".format(i), linear)
+            self.dot_product_size = self.multi_task_mlp_layers_size[-1]
+            print("item_count", self.item_count)
+            print("multi_task_embedding", self.dot_product_size)
+            self.multi_task_item_embedding = paddle.nn.Embedding(
+                self.item_count,
+                self.dot_product_size,
+                weight_attr=paddle.ParamAttr(
+                    name="multi_task_item_embedding_weight",
+                    initializer=paddle.nn.initializer.Uniform()))
         self.path_embedding = []
         for i in range(width):
             emb = paddle.nn.Embedding(
@@ -57,7 +83,7 @@ class DeepRetrieval(nn.Layer):
             )
             self.path_embedding.append(emb)
 
-    def forward(self, user_embedding, item_path_kd_label=None, is_infer=False):
+    def forward(self, user_embedding, item_path_kd_label=None, multi_task_positive_labels = None,multi_task_negative_labels = None, is_infer=False):
 
         def expand_layer(input, n):
             # expand input (batch_size, shape) -> (batch_size * n, shape)
@@ -100,6 +126,7 @@ class DeepRetrieval(nn.Layer):
             input_embedding = expand_layer(
                 user_embedding, self.item_path_volume)
 
+            print("data ready")
             # calc prob of every layer
             path_prob_list = []
             for i in range(self.width):
@@ -123,7 +150,35 @@ class DeepRetrieval(nn.Layer):
             path_prob = paddle.concat(
                 path_prob_list, axis=1)  # (batch_size * J, D)
 
-            return path_prob
+            multi_task_loss = None
+            if self.use_multi_task_learning:
+                temp = user_embedding
+                # (batch, dot_product_size)
+                for i in range(len(self.multi_task_mlp_layers)):
+                   temp = self.multi_task_mlp_layers[i](temp)
+                
+                # (batch, dot_prodcut_size)
+                pos_item_embedding = self.multi_task_item_embedding(paddle.to_tensor(multi_task_positive_labels))
+
+                print("pos_item_embedding shape",pos_item_embedding.shape)
+                neg_item_embedding = self.multi_task_item_embedding(paddle.to_tensor(multi_task_negative_labels))
+                #(batch,1)
+                pos = paddle.dot(temp, pos_item_embedding)
+                neg = paddle.dot(temp, neg_item_embedding)
+                neg = paddle.clip(x=neg,min=-15,max=15)
+
+
+                pos = paddle.log(paddle.nn.functional.sigmoid(pos))
+                neg = paddle.log(1 - paddle.nn.functional.sigmoid(neg))
+                #(batch,2)
+                sum = paddle.concat([pos,neg],axis=1)
+                multi_task_loss = paddle.sum(sum)[0]
+                multi_task_loss = multi_task_loss * -1
+
+            print("multi_task_loss ",multi_task_loss)
+
+
+            return path_prob,multi_task_loss
 
         def infer_forward():
             # beamsearch
@@ -142,8 +197,11 @@ class DeepRetrieval(nn.Layer):
             for i in range(self.width):
                 if i == 0:
                     # first layer, input only use user embedding
+                    # user-embedding [batch, emb_shape]
+                    # [batch, K]
                     tmp_output = F.softmax(self.mlp_layers[i](user_embedding))
                     # assert beam_search_num < height
+                    # [batch, B]
                     prob, index = paddle.topk(
                         tmp_output, self.beam_search_num)
                     path_prob.append(prob)
